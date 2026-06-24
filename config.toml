@@ -1,0 +1,21 @@
+[plugin]
+enabled = true
+config_version = "0.2.0"
+enable_debug_log = false
+
+[server]
+enabled = true
+host = "127.0.0.1"
+port = 8110
+token = "maibot-local-api"
+sync_timeout_sec = 45.0
+max_history_per_session = 100
+stream_chunk_size = 3
+stream_interval_ms = 30
+
+[filter]
+enable_filter = false
+user_list_type = "whitelist"
+user_list = []
+ban_user_id = []
+show_dropped_messages = false

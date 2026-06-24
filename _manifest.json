@@ -1,0 +1,40 @@
+{
+  "manifest_version": 2,
+  "version": "0.2.0",
+  "name": "Mai API 适配器 / Mai API Adapter",
+  "description": "将 MaiBot 暴露为本地 Mai API 服务，支持 REST 调用和 OpenAI 兼容聊天接口。",
+  "author": {
+    "name": "sansenjian",
+    "url": "https://github.com/sansenjian"
+  },
+  "license": "GPL-v3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/sansenjian/Mai_Api_Adapter",
+    "homepage": "https://github.com/sansenjian/Mai_Api_Adapter",
+    "documentation": "https://github.com/sansenjian/Mai_Api_Adapter",
+    "issues": "https://github.com/sansenjian/Mai_Api_Adapter/issues"
+  },
+  "plugin_type": "adapter",
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.0.99"
+  },
+  "sdk": {
+    "min_version": "2.0.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "gateway.route_message",
+    "gateway.update_state"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN",
+      "en-US",
+      "ja-JP"
+    ]
+  },
+  "id": "local.mai-api-adapter"
+}
