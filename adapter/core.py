@@ -5,7 +5,8 @@ from typing import Any, ClassVar, Deque, Dict, List, Mapping, Optional
 from uuid import uuid4
 
 from aiohttp import web
-from maibot_sdk import API, MaiBotPlugin, MessageGateway, PluginConfigBase
+from maibot_sdk import API, MaiBotPlugin, MessageGateway, PluginConfigBase, Tool
+from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
 import asyncio
 import hashlib
@@ -119,6 +120,58 @@ class HttpApiAdapterPlugin(MaiBotPlugin):
             "accepted": accepted,
         }
 
+    @Tool(
+        "query_adapter_status",
+        description="查询 Mai API 适配器运行状态，包括服务器地址、活跃会话数、消息历史数。",
+        parameters=[],
+    )
+    async def tool_query_adapter_status(self, **kwargs: Any) -> Dict[str, Any]:
+        settings = self._load_settings()
+        return {
+            "success": True,
+            "content": json.dumps({
+                "server_running": self._runner is not None,
+                "host": settings.server.host,
+                "port": settings.server.port,
+                "active_sessions": len(self._session_messages),
+                "total_messages": sum(len(h) for h in self._session_messages.values()),
+            }, ensure_ascii=False),
+        }
+
+    @Tool(
+        "get_session_history",
+        description="获取指定会话的最近消息记录。",
+        parameters=[
+            ToolParameterInfo(
+                name="session_id",
+                param_type=ToolParamType.STRING,
+                description="会话 ID，留空则返回所有会话的消息总数。",
+                required=False,
+                default="",
+            ),
+            ToolParameterInfo(
+                name="limit",
+                param_type=ToolParamType.INTEGER,
+                description="返回消息条数上限。",
+                required=False,
+                default=10,
+            ),
+        ],
+    )
+    async def tool_get_session_history(
+        self, session_id: str = "", limit: int = 10, **kwargs: Any,
+    ) -> Dict[str, Any]:
+        if session_id:
+            history = list(self._get_history(session_id))[-max(1, limit):]
+            messages = [{"id": m.get("id"), "text": m.get("text"), "session_id": m.get("session_id")} for m in history]
+            return {"success": True, "content": json.dumps(messages, ensure_ascii=False)}
+        # 无 session_id 时返回所有会话摘要
+        summary = [
+            {"session_id": sid, "message_count": len(hist)}
+            for sid, hist in self._session_messages.items()
+        ]
+        return {"success": True, "content": json.dumps(summary, ensure_ascii=False)}
+
     @MessageGateway(
         name=GATEWAY_NAME,
         route_type="duplex",
@@ -173,6 +226,8 @@ class HttpApiAdapterPlugin(MaiBotPlugin):
         app.router.add_post("/v1/chat", self._handle_chat)
         app.router.add_post("/v1/chat/completions", self._handle_openai_chat_completions)
         app.router.add_get("/v1/models", self._handle_models)
+        app.router.add_get("/v1/tools", self._handle_list_tools)
+        app.router.add_post("/v1/tools/invoke", self._handle_invoke_tool)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -275,6 +330,75 @@ class HttpApiAdapterPlugin(MaiBotPlugin):
                 ],
             }
         )
+
+    async def _handle_list_tools(self, request: web.Request) -> web.Response:
+        """GET /v1/tools — 列出适配器声明的工具，返回 OpenAI function 格式。"""
+        del request
+        tools_map: Dict[str, Any] = self._get_adapter_tools()
+        tools_list = [
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": info.get("description", ""),
+                    "parameters": info.get("parameters", {"type": "object", "properties": {}}),
+                },
+            }
+            for name, info in tools_map.items()
+        ]
+        return web.json_response({"tools": tools_list})
+
+    async def _handle_invoke_tool(self, request: web.Request) -> web.Response:
+        """POST /v1/tools/invoke — API 客户端直接调用适配器声明的工具。"""
+        payload = await self._read_json(request)
+        tool_name = str(payload.get("tool") or payload.get("name") or "").strip()
+        if not tool_name:
+            raise web.HTTPBadRequest(
+                text=json.dumps({"error": {"message": "tool name is required"}})
+            )
+
+        tools_map = self._get_adapter_tools()
+        tool_info = tools_map.get(tool_name)
+        if tool_info is None:
+            return web.json_response(
+                {"error": {"message": f"unknown tool: {tool_name}"}},
+                status=404,
+            )
+
+        arguments = payload.get("arguments") or {}
+        if not isinstance(arguments, dict):
+            raise web.HTTPBadRequest(
+                text=json.dumps({"error": {"message": "arguments must be an object"}})
+            )
+
+        handler = tool_info["handler"]
+        result = await handler(**arguments)
+        return web.json_response(result)
+
+    def _get_adapter_tools(self) -> Dict[str, Any]:
+        """收集适配器声明的所有 @Tool，返回 {name: {"handler": fn, "description": str, "parameters": dict}} 映射。"""
+        tools: Dict[str, Any] = {}
+        for attr_name in dir(self):
+            method = getattr(self, attr_name, None)
+            if method is None or not callable(method):
+                continue
+            component_info = getattr(method, "__maibot_component_info__", None)
+            if component_info is None:
+                continue
+            # ToolComponentInfo.type 是 ComponentType 枚举，值为 "TOOL"
+            component_type = component_info.type
+            type_value = component_type.value if hasattr(component_type, "value") else str(component_type)
+            if type_value != "TOOL":
+                continue
+            name = component_info.name
+            # 使用 SDK 内置的 get_parameters_schema() 生成标准 JSON Schema
+            params_schema = component_info.get_parameters_schema() or {"type": "object", "properties": {}}
+            tools[name] = {
+                "handler": method,
+                "description": component_info.description or "",
+                "parameters": params_schema,
+            }
+        return tools
 
     async def _handle_post_message(self, request: web.Request) -> web.Response:
         payload = await self._read_json(request)
